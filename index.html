@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stock Metadata Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar">
+
+    <div class="brand">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Stock Metadata Studio</span>
+    </div>
+
+    <div class="card key-card">
+      <div class="key-row">
+        <span class="key-icon">🔑</span>
+        <span class="key-label">Gemini API Key</span>
+        <span class="key-status" id="keyStatus">সেট করা নেই</span>
+      </div>
+      <div class="key-input-row" id="keyInputRow">
+        <input type="password" id="apiKeyInput" placeholder="AIza... তোমার Gemini API key বসাও">
+        <button class="btn-small" id="saveKeyBtn">সেভ</button>
+      </div>
+      <a class="key-help" href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">ফ্রি key নাও →</a>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span>⚙️ Settings</span>
+      </div>
+
+      <div class="field">
+        <div class="field-head">
+          <span>Title — শব্দ সংখ্যা</span>
+          <span class="range-readout" id="titleReadout">5 – 15</span>
+        </div>
+        <div class="dual-slider">
+          <input type="range" id="titleMin" min="2" max="25" value="5">
+          <input type="range" id="titleMax" min="2" max="25" value="15">
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-head">
+          <span>Keywords — সংখ্যা</span>
+          <span class="range-readout" id="kwReadout">15 – 30</span>
+        </div>
+        <div class="dual-slider">
+          <input type="range" id="kwMin" min="5" max="60" value="15">
+          <input type="range" id="kwMax" min="5" max="60" value="30">
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-head">
+          <span>Description — শব্দ সংখ্যা</span>
+          <span class="range-readout" id="descReadout">20 – 60</span>
+        </div>
+        <div class="dual-slider">
+          <input type="range" id="descMin" min="5" max="150" value="20">
+          <input type="range" id="descMax" min="5" max="150" value="60">
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label-solo" for="customPrompt">Custom Instruction <span class="optional">(ঐচ্ছিক)</span></label>
+        <textarea id="customPrompt" rows="3" placeholder="যেমন: শুধু মিনিমাল, কমার্শিয়াল স্টাইলে ফোকাস করো..."></textarea>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      সব ছবি ও key শুধু তোমার ব্রাউজারে থাকে। কোনো সার্ভারে সেভ হয় না।
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <main class="main">
+
+    <div class="platform-bar">
+      <span class="platform-eyebrow">Platform</span>
+      <div class="platform-tabs" id="platformTabs">
+        <!-- injected by JS -->
+      </div>
+    </div>
+
+    <div class="dropzone" id="dropzone">
+      <div class="dropzone-icon">⇪</div>
+      <h2>ছবি এখানে ড্র্যাগ করো, বা ব্রাউজ করো</h2>
+      <p class="dropzone-sub">JPG, PNG, WEBP সাপোর্টেড — একসাথে অনেকগুলো ছবি দেয়া যাবে</p>
+      <input type="file" id="fileInput" accept="image/png, image/jpeg, image/webp" multiple hidden>
+      <button class="btn-primary" id="browseBtn">ফাইল বেছে নাও</button>
+    </div>
+
+    <div class="action-row">
+      <div class="queue-info" id="queueInfo">কোনো ছবি যোগ করা হয়নি</div>
+      <div class="action-buttons">
+        <button class="btn-ghost" id="clearBtn">সব মুছো</button>
+        <button class="btn-ghost" id="exportBtn" disabled>CSV এক্সপোর্ট</button>
+        <button class="btn-generate" id="generateBtn" disabled>⚡ মেটাডেটা তৈরি করো</button>
+      </div>
+    </div>
+
+    <div class="results" id="results">
+      <div class="empty-state" id="emptyState">
+        <div class="empty-icon">🗂️</div>
+        <h3>এখনো কোনো ছবি আপলোড হয়নি</h3>
+        <p>ছবি আপলোড করে "মেটাডেটা তৈরি করো" চাপলে টাইটেল, কীওয়ার্ড ও ডেসক্রিপশন অটো তৈরি হবে।</p>
+      </div>
+      <div class="grid" id="grid"></div>
+    </div>
+
+    <footer class="footer">Built for Mithu · Gemini API দিয়ে চলে, ব্রাউজারেই সব প্রসেস হয়</footer>
+  </main>
+
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>

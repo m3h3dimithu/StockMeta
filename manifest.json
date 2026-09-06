@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Adobe Stock Metadata AI Assistant",
+  "version": "1.0.0",
+  "description": "Generates AI-powered titles and keywords for Adobe Stock Contributor uploads using the Gemini API.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://contributor.stock.adobe.com/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://contributor.stock.adobe.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options.html",
+  "action": {
+    "default_title": "Adobe Stock Metadata AI Assistant Settings"
+  }
+}
