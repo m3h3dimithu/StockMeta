@@ -21,16 +21,14 @@
     </div>
 
     <div class="card key-card">
-      <div class="key-row">
-        <span class="key-icon">🔑</span>
-        <span class="key-label">Gemini API Key</span>
-        <span class="key-status" id="keyStatus">সেট করা নেই</span>
+      <div class="card-title" style="margin-bottom:6px;">
+        <span>🔑 API Keys</span>
       </div>
-      <div class="key-input-row" id="keyInputRow">
-        <input type="password" id="apiKeyInput" placeholder="AIza... তোমার Gemini API key বসাও">
-        <button class="btn-small" id="saveKeyBtn">সেভ</button>
-      </div>
-      <a class="key-help" href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">ফ্রি key নাও →</a>
+      <p class="key-intro">
+        যত খুশি key দাও — একটা কাজ না করলে (quota শেষ, মডেল বন্ধ, ইত্যাদি) পরেরটা
+        নিজে থেকেই ট্রাই হবে। মডেলও অটো বাছাই হয়, ম্যানুয়ালি কিছু বাছতে হবে না।
+      </p>
+      <div id="providerList"></div>
     </div>
 
     <div class="card">
