@@ -1,10 +1,181 @@
-/* ===================== CONFIG ===================== */
+/* ===================== PROVIDERS ===================== */
+/*
+  Each provider can:
+   - listModels(key): returns a ranked array of model id strings this key can use
+   - generate(key, model, prompt, base64, mimeType): returns raw text from the model
+  Model lists are discovered LIVE from each provider's API every time (cached briefly
+  in memory), so we never hardcode a model name that might get retired. If a model
+  errors out, the next one is tried automatically, then the next provider.
+*/
 
-const GEMINI_MODEL = "gemini-2.0-flash";
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+function rankModels(names){
+  function score(n){
+    let s = 0;
+    if(/flash|mini|lite/i.test(n)) s += 100;   // fast + cheap/free tiers first
+    if(/pro\b/i.test(n)) s += 40;
+    if(/preview|exp|beta/i.test(n)) s -= 15;
+    if(/embedding|tts|image-gen|imagen|veo|lyria|live|aqa|nano-banana|whisper|dall-e|moderation/i.test(n)) s -= 1000;
+    const nums = (n.match(/\d+(\.\d+)?/g) || []).map(Number);
+    const verScore = nums.reduce((a, b, i) => a + b / Math.pow(10, i), 0);
+    return s * 1000 + verScore;
+  }
+  return [...new Set(names)]
+    .filter(n => score(n) > -500)
+    .sort((a, b) => score(b) - score(a));
+}
 
-// Approximate starting points per platform — always double check against
-// each platform's current contributor guidelines before bulk uploading.
+function parseJsonLoose(text){
+  let cleaned = (text || "").trim();
+  cleaned = cleaned.replace(/^```json/i, "").replace(/^```/, "").replace(/```$/, "").trim();
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  return JSON.parse(match ? match[0] : cleaned);
+}
+
+const PROVIDERS = [
+  {
+    id: "gemini",
+    label: "Google Gemini",
+    tag: "free",
+    helpUrl: "https://aistudio.google.com/app/apikey",
+    placeholder: "AIza...",
+
+    async listModels(key){
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`);
+      if(!res.ok) throw new Error(`model list failed (${res.status})`);
+      const data = await res.json();
+      const names = (data.models || [])
+        .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
+        .map(m => m.name.replace(/^models\//, ""));
+      return rankModels(names);
+    },
+
+    async generate(key, model, prompt, base64, mimeType){
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [
+              { text: prompt },
+              { inline_data: { mime_type: mimeType, data: base64 } }
+            ]}],
+            generationConfig: { responseMimeType: "application/json", temperature: 0.6 }
+          })
+        }
+      );
+      if(!res.ok) throw new Error(`Gemini/${model}: ${res.status} ${(await res.text()).slice(0,140)}`);
+      const data = await res.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if(!text) throw new Error(`Gemini/${model}: খালি রেসপন্স`);
+      return text;
+    }
+  },
+
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    tag: "free",
+    helpUrl: "https://openrouter.ai/keys",
+    placeholder: "sk-or-v1-...",
+
+    async listModels(key){
+      const res = await fetch("https://openrouter.ai/api/v1/models", {
+        headers: key ? { Authorization: `Bearer ${key}` } : {}
+      });
+      if(!res.ok) throw new Error(`model list failed (${res.status})`);
+      const data = await res.json();
+      const ids = (data.data || [])
+        .filter(m => {
+          const mods = m.architecture?.input_modalities || [];
+          const supportsImage = mods.includes("image") || /vision|vl(\b|-)/i.test(m.id);
+          const promptPrice = parseFloat(m.pricing?.prompt ?? "1");
+          const imagePrice = parseFloat(m.pricing?.image ?? "1");
+          const isFree = /:free$/.test(m.id) || (promptPrice === 0 && imagePrice === 0);
+          return supportsImage && isFree;
+        })
+        .map(m => m.id);
+      return rankModels(ids);
+    },
+
+    async generate(key, model, prompt, base64, mimeType){
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } }
+            ]
+          }],
+          temperature: 0.6
+        })
+      });
+      if(!res.ok) throw new Error(`OpenRouter/${model}: ${res.status} ${(await res.text()).slice(0,140)}`);
+      const data = await res.json();
+      const text = data?.choices?.[0]?.message?.content;
+      if(!text) throw new Error(`OpenRouter/${model}: খালি রেসপন্স`);
+      return text;
+    }
+  },
+
+  {
+    id: "openai",
+    label: "OpenAI",
+    tag: "paid",
+    helpUrl: "https://platform.openai.com/api-keys",
+    placeholder: "sk-...",
+
+    async listModels(key){
+      const res = await fetch("https://api.openai.com/v1/models", {
+        headers: { Authorization: `Bearer ${key}` }
+      });
+      if(!res.ok) throw new Error(`model list failed (${res.status})`);
+      const data = await res.json();
+      const ids = new Set((data.data || []).map(m => m.id));
+      // Only vision-capable chat models make sense here; try newest-sounding first.
+      const priority = ["gpt-5-mini", "gpt-5", "gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o"];
+      const found = priority.filter(p => ids.has(p));
+      return found.length ? found : rankModels([...ids].filter(id => /gpt-(4|5)/i.test(id)));
+    },
+
+    async generate(key, model, prompt, base64, mimeType){
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } }
+            ]
+          }],
+          response_format: { type: "json_object" },
+          temperature: 0.6
+        })
+      });
+      if(!res.ok) throw new Error(`OpenAI/${model}: ${res.status} ${(await res.text()).slice(0,140)}`);
+      const data = await res.json();
+      const text = data?.choices?.[0]?.message?.content;
+      if(!text) throw new Error(`OpenAI/${model}: খালি রেসপন্স`);
+      return text;
+    }
+  }
+];
+
+// Platform presets (approximate — always sanity-check against each platform's
+// current contributor guidelines before a real bulk upload)
 const PLATFORMS = {
   general:      { label: "General",      icon: "◇", title:[5,12],  kw:[15,30], desc:[20,50]  },
   adobestock:   { label: "Adobe Stock",  icon: "🅰", title:[5,13],  kw:[20,49], desc:[15,40]  },
@@ -19,18 +190,18 @@ const PLATFORMS = {
 
 /* ===================== STATE ===================== */
 
-let apiKey = localStorage.getItem("smstudio_api_key") || "";
+const apiKeys = JSON.parse(localStorage.getItem("smstudio_keys") || "{}"); // {gemini:'', openrouter:'', openai:''}
+const modelCache = {}; // providerId -> { models: [...], fetchedAt }
 let currentPlatform = "general";
-let images = []; // {id, file, name, dataUrl, base64, mimeType, status, title, keywords, description, error}
+let images = [];
 let idCounter = 0;
+
+function saveKeys(){ localStorage.setItem("smstudio_keys", JSON.stringify(apiKeys)); }
 
 /* ===================== DOM ===================== */
 
 const el = (id) => document.getElementById(id);
-const keyStatus = el("keyStatus");
-const keyInputRow = el("keyInputRow");
-const apiKeyInput = el("apiKeyInput");
-const saveKeyBtn = el("saveKeyBtn");
+const providerList = el("providerList");
 
 const platformTabsEl = el("platformTabs");
 const dropzone = el("dropzone");
@@ -50,32 +221,51 @@ const kwMin = el("kwMin"), kwMax = el("kwMax"), kwReadout = el("kwReadout");
 const descMin = el("descMin"), descMax = el("descMax"), descReadout = el("descReadout");
 const customPrompt = el("customPrompt");
 
-/* ===================== API KEY ===================== */
+/* ===================== PROVIDER KEY UI ===================== */
 
-function refreshKeyUI(){
-  if(apiKey){
-    keyStatus.textContent = "কানেক্টেড";
-    keyStatus.classList.add("ok");
-    keyInputRow.style.display = "none";
-  } else {
-    keyStatus.textContent = "সেট করা নেই";
-    keyStatus.classList.remove("ok");
-    keyInputRow.style.display = "flex";
-  }
+function buildProviderList(){
+  providerList.innerHTML = "";
+  PROVIDERS.forEach(p => {
+    const hasKey = !!apiKeys[p.id];
+    const row = document.createElement("div");
+    row.className = "provider-row";
+    row.innerHTML = `
+      <div class="provider-head">
+        <span>${p.label}</span>
+        <span class="provider-tag ${p.tag}">${p.tag === "free" ? "ফ্রি" : "পেইড"}</span>
+        <span class="provider-status ${hasKey ? "ok" : ""}" data-status="${p.id}">${hasKey ? "কানেক্টেড" : "খালি"}</span>
+      </div>
+      <div class="key-input-row" data-row="${p.id}" style="${hasKey ? "display:none;" : ""}">
+        <input type="password" data-input="${p.id}" placeholder="${p.placeholder}">
+        <button class="btn-small" data-save="${p.id}">সেভ</button>
+      </div>
+      <a class="key-help" href="${p.helpUrl}" target="_blank" rel="noopener">${p.tag === "free" ? "ফ্রি key নাও →" : "key নাও →"}</a>
+    `;
+    providerList.appendChild(row);
+  });
+
+  providerList.querySelectorAll("[data-status]").forEach(statusEl => {
+    statusEl.addEventListener("click", () => {
+      const id = statusEl.dataset.status;
+      const row = providerList.querySelector(`[data-row="${id}"]`);
+      row.style.display = row.style.display === "none" ? "flex" : "none";
+    });
+  });
+
+  providerList.querySelectorAll("[data-save]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.save;
+      const input = providerList.querySelector(`[data-input="${id}"]`);
+      const v = input.value.trim();
+      if(!v) return;
+      apiKeys[id] = v;
+      saveKeys();
+      delete modelCache[id];
+      input.value = "";
+      buildProviderList();
+    });
+  });
 }
-keyStatus.style.cursor = "pointer";
-keyStatus.addEventListener("click", () => {
-  keyInputRow.style.display = keyInputRow.style.display === "none" ? "flex" : "none";
-});
-
-saveKeyBtn.addEventListener("click", () => {
-  const v = apiKeyInput.value.trim();
-  if(!v) return;
-  apiKey = v;
-  localStorage.setItem("smstudio_api_key", apiKey);
-  apiKeyInput.value = "";
-  refreshKeyUI();
-});
 
 /* ===================== PLATFORM TABS ===================== */
 
@@ -154,7 +344,7 @@ function handleFiles(fileList){
         dataUrl, base64, mimeType: file.type,
         status: "pending",
         title: "", keywords: "", description: "",
-        error: ""
+        error: "", usedProvider: ""
       });
       renderGrid();
     };
@@ -198,6 +388,7 @@ function renderGrid(){
       <div class="item-status">
         <button class="item-remove" title="মুছে ফেলো">✕</button>
         <span class="status-pill ${img.status}">${statusLabel(img.status)}</span>
+        ${img.usedProvider ? `<span class="used-provider">${img.usedProvider}</span>` : ""}
         ${img.status === "error" ? `<button class="btn-small" data-retry="1">আবার চেষ্টা</button>` : ""}
       </div>
     `;
@@ -239,11 +430,7 @@ function updateActionRow(){
   clearBtn.disabled = total === 0;
 }
 
-/* ===================== GENERATION ===================== */
-
-generateBtn.addEventListener("click", generateAll);
-clearBtn.addEventListener("click", () => { images = []; renderGrid(); });
-exportBtn.addEventListener("click", exportCSV);
+/* ===================== PROMPT ===================== */
 
 function buildPrompt(){
   const [t0,t1] = [parseInt(titleMin.value), parseInt(titleMax.value)];
@@ -265,10 +452,28 @@ Respond with ONLY a JSON object, no markdown fences, in exactly this shape:
 {"title": "...", "keywords": ["...", "..."], "description": "..."}`;
 }
 
+/* ===================== MODEL DISCOVERY + GENERATION ===================== */
+
+const MODEL_CACHE_MS = 10 * 60 * 1000; // refresh model list every 10 minutes
+
+async function getCandidateModels(provider){
+  const key = apiKeys[provider.id];
+  const cached = modelCache[provider.id];
+  if(cached && Date.now() - cached.fetchedAt < MODEL_CACHE_MS){
+    return cached.models;
+  }
+  const models = await provider.listModels(key);
+  modelCache[provider.id] = { models, fetchedAt: Date.now() };
+  return models;
+}
+
 async function generateAll(){
-  if(!apiKey){
-    keyInputRow.style.display = "flex";
-    apiKeyInput.focus();
+  const anyKey = PROVIDERS.some(p => apiKeys[p.id]);
+  if(!anyKey){
+    const firstRow = providerList.querySelector('[data-row]');
+    if(firstRow) firstRow.style.display = "flex";
+    const firstInput = providerList.querySelector("input[data-input]");
+    if(firstInput) firstInput.focus();
     return;
   }
   const targets = images.filter(i => i.status !== "done");
@@ -281,44 +486,50 @@ async function generateAll(){
 async function generateOne(img){
   img.status = "working";
   img.error = "";
+  img.usedProvider = "";
   renderGrid();
 
-  try{
-    const prompt = buildPrompt();
-    const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(apiKey)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: prompt },
-            { inline_data: { mime_type: img.mimeType, data: img.base64 } }
-          ]
-        }],
-        generationConfig: { responseMimeType: "application/json", temperature: 0.6 }
-      })
-    });
+  const prompt = buildPrompt();
+  const attemptsLog = [];
 
-    if(!res.ok){
-      const errBody = await res.text();
-      throw new Error(`API error ${res.status}: ${errBody.slice(0,180)}`);
+  for(const provider of PROVIDERS){
+    const key = apiKeys[provider.id];
+    if(!key) continue;
+
+    let candidates;
+    try{
+      candidates = await getCandidateModels(provider);
+    } catch(e){
+      attemptsLog.push(`${provider.label}: মডেল লিস্ট আনতে ব্যর্থ — ${e.message}`);
+      continue;
+    }
+    if(!candidates.length){
+      attemptsLog.push(`${provider.label}: উপযুক্ত কোনো মডেল পাওয়া যায়নি`);
+      continue;
     }
 
-    const data = await res.json();
-    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if(!rawText) throw new Error("খালি রেসপন্স এসেছে, আবার চেষ্টা করো।");
-
-    const parsed = JSON.parse(rawText);
-    img.title = (parsed.title || "").trim();
-    img.keywords = Array.isArray(parsed.keywords) ? parsed.keywords.join(", ") : (parsed.keywords || "").trim();
-    img.description = (parsed.description || "").trim();
-    img.status = "done";
-
-  } catch(err){
-    console.error(err);
-    img.status = "error";
-    img.error = err.message || "অজানা সমস্যা হয়েছে।";
+    for(const model of candidates.slice(0, 4)){
+      try{
+        const raw = await provider.generate(key, model, prompt, img.base64, img.mimeType);
+        const parsed = parseJsonLoose(raw);
+        img.title = (parsed.title || "").toString().trim();
+        img.keywords = Array.isArray(parsed.keywords)
+          ? parsed.keywords.join(", ")
+          : (parsed.keywords || "").toString().trim();
+        img.description = (parsed.description || "").toString().trim();
+        img.status = "done";
+        img.usedProvider = `${provider.label} · ${model}`;
+        return;
+      } catch(e){
+        attemptsLog.push(e.message);
+      }
+    }
   }
+
+  img.status = "error";
+  img.error = attemptsLog.length
+    ? "সব চেষ্টা ব্যর্থ: " + attemptsLog.join(" | ")
+    : "কোনো কাজ করা API key পাওয়া যায়নি।";
 }
 
 /* ===================== CSV EXPORT ===================== */
@@ -343,9 +554,13 @@ function exportCSV(){
   URL.revokeObjectURL(url);
 }
 
-/* ===================== INIT ===================== */
+/* ===================== EVENTS + INIT ===================== */
 
+generateBtn.addEventListener("click", generateAll);
+clearBtn.addEventListener("click", () => { images = []; renderGrid(); });
+exportBtn.addEventListener("click", exportCSV);
+
+buildProviderList();
 buildPlatformTabs();
 applyPlatformPreset(currentPlatform);
-refreshKeyUI();
 renderGrid();
